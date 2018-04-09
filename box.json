@@ -1,8 +1,8 @@
 {
     "name":"CFWheels Model Nesting",
-    "version":"0.0.2",
+    "version":"0.0.3",
     "author":"Bryan Welter",
-    "location":"bawelter/cfwheels-model-nesting#v0.0.2",
+    "location":"bawelter/cfwheels-model-nesting#v0.0.3",
     "directory":"plugins",
     "createPackageDirectory":true,
     "packageDirectory":"ModelNesting",
@@ -11,10 +11,14 @@
     "shortDescription":"Model Nesting - fixes cfquery dot notation",
     "description":"Fix for core functionality to support nesting of models",
     "type":"cfwheels-plugins",
-    "keywords":["core","patch","fix"],
+    "keywords":[
+        "core",
+        "patch",
+        "fix"
+    ],
     "private":false,
     "scripts":{
-        "postVersion":"package set location='bawelter/cfwheels-model-nesting#v`package version`'", 
+        "postVersion":"package set location='bawelter/cfwheels-model-nesting#v`package version`'",
         "patch-release":"bump --patch",
         "minor-release":"bump --minor",
         "major-release":"bump --major",
