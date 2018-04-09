@@ -1,9 +1,9 @@
 {
     "name":"CFWheels Model Nesting",
-    "version":"0.0.1",
+    "version":"0.0.2",
     "author":"Bryan Welter",
-    "location":"bawelter/cfwheels-model-nesting#v0.0.1",
-    "directory":"/plugins/",
+    "location":"bawelter/cfwheels-model-nesting#v0.0.2",
+    "directory":"plugins",
     "createPackageDirectory":true,
     "packageDirectory":"ModelNesting",
     "homepage":"https://github.com/bawelter/cfwheels-model-nesting",
