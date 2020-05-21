@@ -1,48 +1,170 @@
 <cfcomponent output="false">
 	<cffunction name="init">
 		<cfscript>
-			this.version="2.0.1";
+			this.version="2.1.0";
 			return this;
 		</cfscript>
 	</cffunction>
 
-	<cffunction name="$executeQuery" returntype="struct" access="public" output="false">
-		<cfargument name="queryAttributes" type="struct" required="true">
-		<cfargument name="sql" type="array" required="true">
-		<cfargument name="parameterize" type="boolean" required="true">
-		<cfargument name="limit" type="numeric" required="true">
-		<cfargument name="offset" type="numeric" required="true">
-		<cfargument name="comment" type="string" required="true">
-		<cfargument name="debugName" type="string" required="true">
-		<cfargument name="primaryKey" type="string" required="true">
+	<cffunction name="$createSQLFieldList" returntype="string" access="public" output="false">
+		<cfargument name="clause" type="string" required="true">
+		<cfargument name="list" type="string" required="true">
+		<cfargument name="include" type="string" required="true">
+		<cfargument name="returnAs" type="string" required="true">
+		<cfargument name="includeSoftDeletes" type="boolean" default="false">
+		<cfargument name="useExpandedColumnAliases" type="boolean" default="#application.wheels.useExpandedColumnAliases#">
 		<cfscript>
+			// setup an array containing class info for current class and all the ones that should be included
+			local.classes = [];
+			if (Len(arguments.include)) {
+				local.classes = $expandedAssociations(include=arguments.include, includeSoftDeletes=arguments.includeSoftDeletes);
+			}
+			ArrayPrepend(local.classes, variables.wheels.class);
 
-			// Since we allow the developer to pass in the name to use for the query variable we need to avoid name clashing.
-			// We do this by putting all our own variables inside a $wheels struct.
-			local.$wheels = {};
-			local.$wheels.rv = {};
-
-		</cfscript>
-		<cfquery attributeCollection="#arguments.queryAttributes#"><cfset local.$wheels.pos = 0><cfloop array="#arguments.sql#" index="local.$wheels.i"><cfset local.$wheels.pos = local.$wheels.pos + 1><cfif IsStruct(local.$wheels.i)><cfset local.$wheels.queryParamAttributes = $queryParams(local.$wheels.i)><cfif NOT IsBinary(local.$wheels.i.value) AND local.$wheels.i.value IS "null" AND local.$wheels.pos GT 1 AND (Right(arguments.sql[local.$wheels.pos-1], 2) IS "IS" OR Right(arguments.sql[local.$wheels.pos-1], 6) IS "IS NOT")>NULL<cfelseif StructKeyExists(local.$wheels.queryParamAttributes, "list")><cfif arguments.parameterize>(<cfqueryparam attributeCollection="#local.$wheels.queryParamAttributes#">)<cfelse>(#PreserveSingleQuotes(local.$wheels.i.value)#)</cfif><cfelse><cfif arguments.parameterize><cfqueryparam attributeCollection="#local.$wheels.queryParamAttributes#"><cfelse>#$quoteValue(str=local.$wheels.i.value, sqlType=local.$wheels.i.type)#</cfif></cfif><cfelse><cfset local.$wheels.i = Replace(PreserveSingleQuotes(local.$wheels.i), "[[comma]]", ",", "all")>#PreserveSingleQuotes(local.$wheels.i)#</cfif>#chr(13)##chr(10)#</cfloop><cfif arguments.limit>LIMIT #arguments.limit#<cfif arguments.offset>#chr(13)##chr(10)#OFFSET #arguments.offset#</cfif></cfif><cfif Len(arguments.comment)>#arguments.comment#</cfif></cfquery>
-		<cfif StructKeyExists(local, arguments.debugName)>
-			<cfset local.$wheels.rv.query = local[arguments.debugName]>
-		<cfelseif isDefined('local.#arguments.debugName#')>
-			<cfset local.$wheels.rv.query = evaluate('local.#arguments.debugName#')>
-		</cfif>
-		<cfscript>
-
-			// Get / set the primary key name / value when Lucee / ACF cannot retrieve it for us.
-			local.$wheels.id = $identitySelect(
-				primaryKey=arguments.primaryKey,
-				queryAttributes=arguments.queryAttributes,
-				result=local.$wheels.result
-			);
-			if (StructKeyExists(local.$wheels, "id")) {
-				StructAppend(local.$wheels.result, local.$wheels.id);
+			// if the developer passes in tablename.*, translate it into the list of fields for the developer, this is so we don't get *'s in the group by
+			if (Find(".*", arguments.list)) {
+				arguments.list = $expandProperties(list=arguments.list, classes=local.classes);
 			}
 
-			local.$wheels.rv.result = local.$wheels.result;
-			return local.$wheels.rv;
+			// add properties to select if the developer did not specify any
+			if (!Len(arguments.list)) {
+				local.iEnd = ArrayLen(local.classes);
+				for (local.i = 1; local.i <= local.iEnd; local.i++) {
+					local.classData = local.classes[local.i];
+					arguments.list = ListAppend(arguments.list, local.classData.propertyList);
+					if (StructCount(local.classData.calculatedProperties)) {
+						for (local.key in local.classData.calculatedProperties) {
+							if (local.classData.calculatedProperties[local.key].select) {
+								arguments.list = ListAppend(arguments.list, local.key);
+							}
+						}
+					}
+				}
+			}
+
+			// go through the properties and map them to the database unless the developer passed in a table name or an alias in which case we assume they know what they're doing and leave the select clause as is
+			if (!Find(".", arguments.list) && !Find(" AS ", arguments.list)) {
+				local.rv = "";
+				local.addedProperties = "";
+				local.addedPropertiesByModel = {};
+				local.iEnd = ListLen(arguments.list);
+				for (local.i = 1; local.i <= local.iEnd; local.i++) {
+					local.iItem = Trim(ListGetAt(arguments.list, local.i));
+
+					// look for duplicates
+					local.duplicateCount = ListValueCountNoCase(local.addedProperties, local.iItem);
+					local.addedProperties = ListAppend(local.addedProperties, local.iItem);
+
+					// loop through all classes (current and all included ones)
+					local.jEnd = ArrayLen(local.classes);
+					for (local.j = 1; local.j <= local.jEnd; local.j++) {
+						local.toAppend = "";
+						local.classData = local.classes[local.j];
+
+						// create a struct for this model unless it already exists
+						if (!StructKeyExists(local.addedPropertiesByModel, local.classData.modelName)) {
+							local.addedPropertiesByModel[local.classData.modelName] = "";
+						}
+
+						// if we find the property in this model and it's not already added we go ahead and add it to the select clause
+						if ((ListFindNoCase(local.classData.propertyList, local.iItem) || ListFindNoCase(local.classData.calculatedPropertyList, local.iItem)) && !ListFindNoCase(local.addedPropertiesByModel[local.classData.modelName], local.iItem)) {
+							// if expanded column aliases is enabled then mark all columns from included classes as duplicates in order to prepend them with their class name
+							local.flagAsDuplicate = false;
+							if (arguments.clause == "select") {
+								if (local.duplicateCount) {
+									// always flag as a duplicate when a property with this name has already been added
+									local.flagAsDuplicate  = true;
+								} else if (local.j > 1) {
+									if (arguments.useExpandedColumnAliases) {
+										// when on included models and using the new setting we flag every property as a duplicate so that the model name always gets prepended
+										local.flagAsDuplicate  = true;
+									} else if (!arguments.useExpandedColumnAliases && arguments.returnAs != "query") {
+										// with the old setting we only do it when we're returning object(s) since when creating instances on none base models we need the model name prepended
+										local.flagAsDuplicate  = true;
+									}
+								}
+							}
+							if (local.flagAsDuplicate) {
+								local.toAppend &= "[[duplicate]]" & local.j;
+							}
+							if (ListFindNoCase(local.classData.propertyList, local.iItem)) {
+								local.toAppend &= local.classData.tableName & ".";
+								if (ListFindNoCase(local.classData.columnList, local.iItem)) {
+									local.toAppend &= local.iItem;
+								} else {
+									local.toAppend &= local.classData.properties[local.iItem].column;
+									if (arguments.clause == "select") {
+										local.toAppend &= " AS " & local.iItem;
+									}
+								}
+							} else if (ListFindNoCase(local.classData.calculatedPropertyList, local.iItem)) {
+								local.sql = Replace(local.classData.calculatedProperties[local.iItem].sql, ",", "[[comma]]", "all");
+								if (arguments.clause == "select" || !REFind("^(SELECT )?(AVG|COUNT|MAX|MIN|SUM)\(.*\)", local.sql)) {
+									local.toAppend &= "(" & local.sql & ")";
+									if (arguments.clause == "select") {
+										local.toAppend &= " AS " & local.iItem;
+									}
+								}
+							}
+							local.addedPropertiesByModel[local.classData.modelName] = ListAppend(local.addedPropertiesByModel[local.classData.modelName], local.iItem);
+							break;
+						}
+					}
+					if (Len(local.toAppend)) {
+						local.rv = ListAppend(local.rv, local.toAppend);
+					}
+				}
+
+				// let's replace eventual duplicates in the clause by prepending the class name
+				if (Len(arguments.include) && arguments.clause == "select") {
+					local.newSelect = "";
+					local.addedProperties = "";
+					local.iEnd = ListLen(local.rv);
+					for (local.i = 1; local.i <= local.iEnd; local.i++) {
+						local.iItem = ListGetAt(local.rv, local.i);
+
+						// get the property part, done by taking everytyhing from the end of the string to a . or a space (which would be found when using " AS ")
+						local.property = Reverse(SpanExcluding(Reverse(local.iItem), ". "));
+
+						// check if this one has been flagged as a duplicate, we get the number of classes to skip and also remove the flagged info from the item
+						local.duplicateCount = 0;
+						local.matches = REFind("^\[\[duplicate\]\](\d+)(.+)$", local.iItem, 1, true);
+						if (local.matches.pos[1] > 0) {
+							local.duplicateCount = Mid(local.iItem, local.matches.pos[2], local.matches.len[2]);
+							local.iItem = Mid(local.iItem, local.matches.pos[3], local.matches.len[3]);
+						}
+
+						if (!local.duplicateCount) {
+							// this is not a duplicate so we can just insert it as is
+							local.newItem = local.iItem;
+							local.newProperty = local.property;
+						} else {
+							// this is a duplicate so we prepend the class name and then insert it unless a property with the resulting name already exist
+							local.classData = local.classes[local.duplicateCount];
+
+							// prepend class name to the property
+							local.newProperty = local.classData.modelName & local.property;
+
+							if (Find(" AS ", local.iItem)) {
+								local.newItem = ReplaceNoCase(local.iItem, " AS " & local.property, " AS " & '`' & local.newProperty & '`');
+							} else {
+								local.newItem = local.iItem & " AS " & '`' & local.newProperty & '`';
+							}
+						}
+						if (!ListFindNoCase(local.addedProperties, local.newProperty)) {
+							local.newSelect = ListAppend(local.newSelect, local.newItem);
+							local.addedProperties = ListAppend(local.addedProperties, local.newProperty);
+						}
+					}
+					local.rv = local.newSelect;
+				}
+			} else {
+				local.rv = arguments.list;
+				if (arguments.clause == "groupBy" && Find(" AS ", local.rv)) {
+					local.rv = REReplace(local.rv, variables.wheels.class.RESQLAs, "", "all");
+				}
+			}
+			return local.rv;
 		</cfscript>
 	</cffunction>
 </cfcomponent>
